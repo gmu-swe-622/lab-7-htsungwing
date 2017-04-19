@@ -16,6 +16,8 @@ import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.framework.recipes.nodes.GroupMember;
+import org.apache.curator.framework.recipes.shared.SharedCount;
+import org.apache.curator.framework.recipes.shared.VersionedValue;
 import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.zookeeper.server.ServerConfig;
 import org.apache.zookeeper.server.ZooKeeperServerMain;
@@ -32,10 +34,29 @@ public class MembershipMain {
 		RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
 		curator = CuratorFrameworkFactory.newClient("localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:9004", retryPolicy);
 		curator.start();
-
+		Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+			@Override
+			public void run() {
+				curator.close();
+			}
+		}));
 		Scanner s = new Scanner(System.in);
-		System.out.println("Enter id for this member: ");
-		String id = s.nextLine();
+		//System.out.println("Enter id for this member: ");
+		//String id = s.nextLine();
+		SharedCount c = new SharedCount(curator,"/count",0);
+		String id = "";
+		try {
+			c.start();
+			VersionedValue<Integer>val = c.getVersionedValue();
+			c.trySetCount(val,c.getCount()+1);
+			id = c.getCount()+"";
+			System.out.println("my id:"+id);
+			c.close();
+		} catch (Exception e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+
 		System.out.println("Options: 1 (quit) 2 (join group) 3 (leave group) 4 (list group members)");
 		scannerLoop: while (s.hasNextLine()) {
 
@@ -68,12 +89,52 @@ public class MembershipMain {
 
 	static HashMap<String, GroupMember> memberships = new HashMap<String, GroupMember>();
 	private static void joinGroup(String groupName, String id) {
+		try {
+			synchronized(memberships) {
+				GroupMember member = memberships.get(groupName);
+				if(member!=null) {
+					member.start();
+				}
+				else {
+					member = new GroupMember(curator,"/memberships/"+groupName,id);
+					member.start();
+					memberships.put(groupName, member);
+				}
+			}
+		} catch (Exception e) {
+			System.out.println(e);
+			System.out.println("can't join the group");
+		}
 	}
 
 	private static void leaveGroup(String groupName) {
-		
+		try {
+			synchronized(memberships) {
+				GroupMember member = memberships.get(groupName);
+				if(member!=null) {
+					member.close();
+					memberships.remove(member);
+				}
+			}
+		} catch (Exception e) {
+			System.out.println(e);
+			System.out.println("can't leave the group");
+		}
 	}
 
 	private static void listMembers(String groupName) {
+		
+		synchronized(memberships) {
+			/*for(String key: memberships.keySet()) {
+				System.out.println("Person " + memberships.get(key) + " is a member of " + key);
+			}*/
+			GroupMember group = memberships.get(groupName);
+			if(group==null)
+				return;
+			Map<String,byte[]>members = group.getCurrentMembers();
+			for(String key: members.keySet()) {
+				System.out.println(key);
+			}
+		}
 	}
 }
